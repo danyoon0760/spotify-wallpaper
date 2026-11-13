@@ -1,0 +1,22 @@
+# 빌드 산출물
+bin/
+obj/
+dist/
+publish/
+TestResults/
+
+# 편집기·OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+
+# 로컬 Claude 설정 (launch.json은 공유)
+.claude/settings.local.json
+
+# 디버깅 스크린샷 등 임시 파일
+*.log
+out.png

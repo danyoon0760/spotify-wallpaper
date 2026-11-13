@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SpotifyWallpaper</AssemblyName>
+    <RootNamespace>SpotifyWallpaper</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- WebView2 패키지의 WPF 어셈블리가 끌고 오는 WindowsBase 버전 경고 (WinForms만 쓰므로 무해) -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+  <!-- 렌더러(web 폴더)를 실행 파일 옆으로 복사 -->
+  <ItemGroup>
+    <Content Include="..\web\**\*" LinkBase="web" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

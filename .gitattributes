@@ -1,0 +1,6 @@
+# 소스는 LF로 통일 (Windows에서 체크아웃해도 줄바꿈이 바뀌지 않게)
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.woff2 binary
+*.ico binary
+*.png binary

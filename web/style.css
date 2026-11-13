@@ -1,0 +1,180 @@
+:root {
+  --accent: 216, 212, 204;   /* JS가 앨범아트에서 추출해 덮어씀 (r, g, b) */
+  --paper: 242, 239, 233;
+  --sans: "Pretendard Variable", Pretendard, "Noto Sans JP", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --ease-out: cubic-bezier(.16, .84, .24, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #070708;
+  color: rgb(var(--paper));
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+#gl {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ───────────── 앨범아트 아래 메타 ───────────── */
+
+#meta {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.meta-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 1.5vh);
+  height: 1px;
+  background: rgba(var(--paper), .12);
+}
+
+.meta-progress-fill {
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background: rgb(var(--accent));
+  box-shadow: 0 0 .8vh rgba(var(--accent), .7);
+}
+
+.meta-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 2.8vh);
+}
+
+.meta-title {
+  font-size: 2.9vh;
+  font-weight: 700;
+  letter-spacing: -.015em;
+  line-height: 1.22;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta-artist {
+  margin-top: .7vh;
+  font-size: 2.0vh;
+  font-weight: 400;
+  color: rgba(var(--paper), .55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ───────────── 가사 ───────────── */
+
+#lyrics {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  transition: opacity 1s var(--ease-out);
+}
+
+#lyrics.show { opacity: 1; }
+
+/* 좌우로 여유를 줘서 현재 줄의 빛번짐(text-shadow)이 왼쪽 끝에서 잘리지 않게 함.
+   글자 위치는 .lyrics-track 의 같은 여백으로 원래 자리에 유지 */
+.lyrics-viewport {
+  position: absolute;
+  inset: 0 -5vh;
+  overflow: hidden;
+  transition: opacity 1.1s var(--ease-out), transform 1.1s var(--ease-out);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 22%, #000 78%, transparent 100%);
+          mask-image: linear-gradient(to bottom, transparent 0%, #000 22%, #000 78%, transparent 100%);
+}
+
+/* 가사 교체: 기존 가사는 빠르게 사라지고, 새 가사는 아래에서 천천히 떠오름 */
+.lyrics-viewport.fade-out {
+  opacity: 0;
+  transform: translateY(1.6vh);
+  transition-duration: .35s;
+}
+
+.lyrics-track {
+  position: absolute;
+  left: 5vh;
+  right: 5vh;
+  top: 0;
+  transition: transform .9s var(--ease-out);
+  will-change: transform;
+}
+
+.line {
+  font-size: 3.0vh;
+  font-weight: 650;
+  line-height: 1.38;
+  letter-spacing: -.012em;
+  padding: 1.05vh 0;
+  color: rgb(var(--paper));
+  transform-origin: left center;
+  transition: opacity .7s var(--ease-out), transform .7s var(--ease-out), filter .7s var(--ease-out);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 현재 줄: 줄 전체가 한 번에 밝아짐 (밝아지는 건 빠르게, 스크롤은 부드럽게) */
+.line.active {
+  color: rgb(var(--paper));
+  text-shadow: 0 0 1.6vh rgba(var(--accent), .45);
+  transition: opacity .2s ease-out, transform .5s var(--ease-out), filter .2s ease-out;
+}
+
+/* 가사가 없는 곡: 가사 자리에 얇은 파형 한 줄 */
+.wave {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  top: 50%;
+  height: 16vh;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 1.2s var(--ease-out);
+}
+
+#lyrics.no-lyrics .wave { opacity: 1; }
+
+.line.gap {
+  font-family: var(--mono);
+  letter-spacing: .6em;
+  font-size: 2.2vh;
+}
+
+#dev-hint {
+  position: fixed;
+  left: 16px;
+  bottom: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: rgba(var(--paper), .35);
+  white-space: pre;
+  pointer-events: none;
+}
