@@ -213,7 +213,7 @@ internal sealed class DisplayManager : IDisposable
             catch (Exception ex)
             {
                 Log.Error("webview init", ex);
-                if (main) MessageBox.Show("WebView2 초기화에 실패했습니다.\n" + ex.Message, "Spotify Wallpaper");
+                if (main) ShowWebViewError(ex);
             }
         };
         form.Show();
@@ -306,6 +306,31 @@ internal sealed class DisplayManager : IDisposable
         if (IsZoomed(fg)) return rect;
         GetWindowRect(fg, out RECT r);
         return r.Left <= m.Left && r.Top <= m.Top && r.Right >= m.Right && r.Bottom >= m.Bottom ? rect : null;
+    }
+
+    // 창을 다시 만들 때마다 뜨지 않도록 한 번만 알린다
+    static bool _webViewErrorShown;
+    const string WebView2DownloadUrl = "https://developer.microsoft.com/microsoft-edge/webview2/";
+
+    static void ShowWebViewError(Exception ex)
+    {
+        if (_webViewErrorShown) return;
+        _webViewErrorShown = true;
+        if (ex is Microsoft.Web.WebView2.Core.WebView2RuntimeNotFoundException)
+        {
+            var answer = MessageBox.Show(
+                "화면을 그리는 데 필요한 Microsoft Edge WebView2 런타임이 이 PC에 없습니다.\n\n" +
+                "다운로드 페이지를 열까요? \"Evergreen Bootstrapper\"를 받아 설치한 뒤 앱을 다시 실행해 주세요.",
+                "Spotify Wallpaper", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (answer == DialogResult.Yes)
+            {
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(WebView2DownloadUrl) { UseShellExecute = true }); }
+                catch (Exception e) { Log.Write("open webview2 page: " + e.Message); }
+            }
+            return;
+        }
+        MessageBox.Show("WebView2 초기화에 실패했습니다.\n" + ex.Message, "Spotify Wallpaper",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     public void Dispose()

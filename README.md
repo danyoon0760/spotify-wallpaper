@@ -2,7 +2,21 @@
 
 A live desktop wallpaper that reacts to the song playing in Spotify (Windows 10/11).
 It shows the album art in its original colors over a dark blurred background, and can show synced lyrics.
-When nothing is playing it gets out of the way and your normal wallpaper is shown.
+When Spotify is closed it gets out of the way and your normal wallpaper is shown.
+
+## 설치 (Install)
+
+1. [최신 Release](https://github.com/danyoon0760/spotify-wallpaper/releases/latest)에서 `SpotifyWallpaper.App-win-Setup.exe`를 받아 실행합니다.
+2. "Windows의 PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누릅니다. 코드 서명을 하지 않은 프로그램이라 처음 한 번 뜹니다.
+3. 설치가 끝나면 바로 켜집니다. 작업 표시줄 오른쪽 **트레이 아이콘**에서 설정하고, 필요하면 "Windows 시작 시 실행"을 켜 두세요.
+
+- 필요한 것: Windows 10 (2004 이상) 또는 11, x64, Spotify 데스크톱 앱. .NET은 앱에 들어 있어 따로 설치할 필요가 없고,
+  WebView2 런타임이 없는 PC라면 설치 프로그램이 함께 설치합니다.
+- 새 버전이 나오면 앱이 스스로 내려받아 트레이에서 알려 줍니다. 트레이 메뉴의 "새 버전 설치 후 다시 시작"을 누르거나,
+  다음에 앱이 켜질 때 자동으로 적용됩니다.
+- 설치하지 않고 쓰려면 같은 Release의 `SpotifyWallpaper.App-win-Portable.zip`을 풀어 `SpotifyWallpaper.exe`를 실행하세요.
+- 제거: Windows 설정 → 앱 → 설치된 앱 → Spotify Wallpaper. 자동 시작 등록과 캐시도 함께 지워집니다
+  (설정과 로그가 있는 `%APPDATA%\SpotifyWallpaper`는 남습니다).
 
 ## Running it
 
@@ -21,10 +35,11 @@ Control it from the **tray icon** (bottom right of the taskbar):
 | Album display monitor | With 2+ monitors, pick which one shows the album and lyrics (the rest show only the background) |
 | High-res album art | Looks up 1200px (iTunes) / 1000px (Deezer) art; the Spotify thumbnail is 300px |
 | Frame limit | 30 / 60 FPS |
-| Show the original wallpaper when not playing | Hides the windows 30 s after Spotify stops/closes, or after 10 min paused; they come back when playback starts |
+| Show the original wallpaper when Spotify is closed | Hides the windows 30 s after Spotify closes (paused or stopped is fine as long as Spotify is open); they come back when Spotify starts again |
 | Hotkey… | Press a new combination for "Show lyrics", or turn the hotkey off (default `Ctrl+Alt+L`) |
 | Start with Windows | Registers it in HKCU Run |
 | Reload / Developer tools / Open log folder | For development |
+| Check for updates / Install new version and restart | Installed copies only; checks GitHub Releases 1 min after start and every 6 h |
 
 Files it keeps:
 
@@ -35,6 +50,7 @@ Files it keeps:
 | `%LOCALAPPDATA%\SpotifyWallpaper\art-cache` | Album art (up to 400 hi-res images, oldest removed first) |
 | `%LOCALAPPDATA%\SpotifyWallpaper\lyrics-cache` | Lyrics search results |
 | `%LOCALAPPDATA%\SpotifyWallpaper\WebView2` | Browser profile |
+| `%LOCALAPPDATA%\SpotifyWallpaper.App` | The installed app itself (Velopack), when installed with Setup |
 
 ## Structure
 
@@ -52,6 +68,7 @@ host/   .NET 10 WinForms + WebView2 host
   LyricsMatcher.cs           which candidate to accept (duration within ±3s, speed-variant scaling), LRC parsing — pure functions
   ArtworkService.cs          high-res album art search (iTunes US → JP, Deezer)
   ArtStore.cs                album art disk cache
+  UpdateService.cs           self-update from GitHub Releases (Velopack)
   Http.cs, Settings.cs, AppPaths.cs, Native.cs, Log.cs, AutoStart.cs
 web/    renderer (HTML + WebGL2)
   src/main.js        entry point: wires the modules together, main loop, tells the host how much audio it needs
@@ -69,6 +86,7 @@ web/    renderer (HTML + WebGL2)
 tests/  unit tests for the pure logic (lyrics matching, title comparison, hotkey parsing, art cache)
 dev/    dev server, CDP debugging script, font download and icon scripts
 build.ps1   test + publish
+.github/workflows/release.yml   tag v* → test, build, Setup.exe + portable zip, GitHub Release
 ```
 
 ## Development
@@ -97,11 +115,29 @@ powershell -ExecutionPolicy Bypass -File build.ps1               # dist\  (needs
 powershell -ExecutionPolicy Bypass -File build.ps1 -Standalone   # dist-standalone\  (no .NET install needed, much bigger)
 ```
 
+### Releasing a new version
+
+Push a tag that looks like `v1.2.3`. GitHub Actions runs the tests, builds a self-contained package with
+[Velopack](https://velopack.io), and publishes `Setup.exe`, the portable zip and the update packages as a GitHub Release.
+Installed copies pick it up on their own.
+
+```
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The version comes from the tag (the `<Version>` in the csproj is only used for local builds).
+If you update the `Velopack` package, change `VPK_VERSION` in the workflow to the same version.
+
 Running with the `WALLPAPER_DEBUG_PORT=9229` environment variable opens a remote debugging port, so you can use
 `node dev/cdp-eval.mjs "<JS expression>"` and `node dev/cdp-eval.mjs --shot out.png` (`CDP_PAGE=bg` selects a background-only page).
 
 Other scripts: `node dev/fetch-fonts.mjs` re-downloads the bundled fonts (only needed to change versions),
 `dev\make-icon.ps1` redraws `host\app.ico`.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The bundled fonts are under the SIL Open Font License (`web/fonts/licenses`).
 
 ## Notes
 

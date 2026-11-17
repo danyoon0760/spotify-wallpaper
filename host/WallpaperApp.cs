@@ -28,6 +28,7 @@ public sealed class WallpaperApp : ApplicationContext
     readonly ArtworkService _artwork;
     readonly DisplayManager _displays;
     readonly TrayMenu _tray;
+    readonly UpdateService _updates;
     readonly MessageWindow _msgWindow;
     readonly System.Windows.Forms.Timer _idleTimer = new();
     readonly bool _windowed;
@@ -68,7 +69,9 @@ public sealed class WallpaperApp : ApplicationContext
         // Spotify가 꺼진 채로 켜졌다면 원래 배경화면을 그대로 두고, Spotify가 켜지면 나타난다
         _displays.Start(asleep: _settings.HideWhenIdle);
 
-        _tray = new TrayMenu(_settings, _displays, windowed);
+        _updates = new UpdateService(_ui);
+        _tray = new TrayMenu(_settings, _displays, _updates, windowed);
+        _tray.ApplyUpdateRequested += () => { if (_updates.ApplyAndRestart()) ExitApp(); };
         _tray.ToggleLyrics += ToggleLyrics;
         _tray.SettingsChanged += ApplySettings;
         _tray.MonitorSelected += SetMainMonitor;
@@ -425,6 +428,7 @@ public sealed class WallpaperApp : ApplicationContext
         UnregisterHotKey(_msgWindow.Handle, HotkeyLyrics);
         _audio.Dispose();
         _media.Dispose();
+        _updates.Dispose();
         _tray.Dispose();
         _displays.Dispose();
         if (!_windowed) DesktopHost.RefreshWallpaper();

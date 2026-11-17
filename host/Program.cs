@@ -1,4 +1,5 @@
 using System.Reflection;
+using Velopack;
 
 namespace SpotifyWallpaper;
 
@@ -13,6 +14,12 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // 설치·업데이트·제거 때 설치 프로그램(Velopack)이 이 exe를 특별한 인수로 불러 처리하고 바로 끝낸다.
+        // 반드시 맨 처음에 둔다. 다운로드해 둔 업데이트가 있으면 여기서 적용하고 새 버전으로 다시 켠다.
+        VelopackApp.Build()
+            .OnBeforeUninstallFastCallback(_ => CleanUpOnUninstall())
+            .Run();
+
         // --exit : 이미 떠 있는 앱을 정상 종료시키고 끝낸다 (빌드 스크립트가 exe를 교체하기 전에 사용)
         if (args.Any(a => a.Equals("--exit", StringComparison.OrdinalIgnoreCase)))
         {
@@ -52,5 +59,13 @@ static class Program
             Log.Error("startup", ex);
             throw;
         }
+    }
+
+    // 제거 직전: 자동 시작 등록과 캐시(앨범아트·가사·브라우저 프로필)를 지운다. 설정·로그(%APPDATA%)는 남겨 둔다.
+    // 설치 프로그램이 짧게 기다리므로 빨리 끝내고, 실패해도 제거는 계속되게 한다
+    static void CleanUpOnUninstall()
+    {
+        try { AutoStart.Set(false); } catch { }
+        try { if (Directory.Exists(AppPaths.Local)) Directory.Delete(AppPaths.Local, recursive: true); } catch { }
     }
 }

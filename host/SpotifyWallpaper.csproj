@@ -30,6 +30,7 @@
     <!-- 버전은 고정한다 (1.0.* 처럼 띄워 두면 빌드할 때마다 다른 버전이 들어올 수 있음) -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
   <ItemGroup>

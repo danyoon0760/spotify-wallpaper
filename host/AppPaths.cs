@@ -10,7 +10,7 @@ internal static class AppPaths
     public static readonly string Data = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName);
 
-    static readonly string Local = Path.Combine(
+    public static readonly string Local = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
 
     public static readonly string WebView2 = Path.Combine(Local, "WebView2");
