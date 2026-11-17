@@ -8,7 +8,7 @@ export class Player {
     this.playback = 'stopped';
     this.tl = { pos: 0, dur: 0, at: performance.now() };
     this.lyricsStatus = null; // null | 'loading' | 'found' | 'none' | 'instrumental' | 'error'
-    this.settings = { lyrics: false, fps: 60 };
+    this.settings = { lyrics: false, fps: 60, lyricsOffset: 0 }; // lyricsOffset(ms): 양수 = 가사가 더 빨리
     this.hidden = false;
   }
 
@@ -58,6 +58,7 @@ export class Player {
         const wasLyrics = this.settings.lyrics;
         if ('lyrics' in msg) this.settings.lyrics = !!msg.lyrics;
         if ('fps' in msg) this.settings.fps = msg.fps || 60;
+        if ('lyricsOffset' in msg) this.settings.lyricsOffset = Number(msg.lyricsOffset) || 0;
         if (this.settings.lyrics && !wasLyrics && this.lyricsStatus == null) this.lyricsStatus = 'loading';
         return;
       }

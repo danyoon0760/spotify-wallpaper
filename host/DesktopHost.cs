@@ -80,6 +80,14 @@ internal sealed class DesktopHost
 
     public bool IsParentAlive => Parent != IntPtr.Zero && IsWindow(Parent);
 
+    // 붙어 있던 창이 사라지거나 숨은 뒤 바탕화면에 마지막 프레임이 남지 않도록 현재 배경화면을 다시 적용
+    public static void RefreshWallpaper()
+    {
+        var sb = new System.Text.StringBuilder(520);
+        if (SystemParametersInfo(SPI_GETDESKWALLPAPER, (uint)sb.Capacity, sb, 0) && sb.Length > 0)
+            SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, sb, 0);
+    }
+
     static IntPtr FindClassicWorkerW()
     {
         IntPtr result = IntPtr.Zero;

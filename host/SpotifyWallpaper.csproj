@@ -10,13 +10,33 @@
     <AssemblyName>SpotifyWallpaper</AssemblyName>
     <RootNamespace>SpotifyWallpaper</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <!-- 트레이 메뉴와 로그, HTTP User-Agent에 표시되는 버전 -->
+    <Version>1.0.0</Version>
+    <Product>Spotify Wallpaper</Product>
+    <Description>Spotify에서 재생 중인 곡에 반응하는 라이브 배경화면</Description>
+    <!-- 버전 뒤에 커밋 해시를 붙이지 않음 -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- WebView2 패키지의 WPF 어셈블리가 끌고 오는 WindowsBase 버전 경고 (WinForms만 쓰므로 무해) -->
     <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+    <!-- 영어 외 언어 리소스 폴더를 만들지 않음 -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- 배포 폴더에 패키지의 API 설명서(.xml)를 넣지 않음 -->
+    <PublishDocumentationFiles>false</PublishDocumentationFiles>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" />
+    <!-- 버전은 고정한다 (1.0.* 처럼 띄워 두면 빌드할 때마다 다른 버전이 들어올 수 있음) -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 트레이 아이콘으로도 쓰도록 실행 파일 안에 넣는다 -->
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+    <!-- 테스트 프로젝트가 internal 형식(LyricsMatcher 등)을 볼 수 있게 -->
+    <InternalsVisibleTo Include="SpotifyWallpaper.Tests" />
   </ItemGroup>
 
   <!-- 렌더러(web 폴더)를 실행 파일 옆으로 복사 -->

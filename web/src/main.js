@@ -58,6 +58,9 @@ const player = new Player({
   art(msg) {
     const token = ++artToken;
     const img = new Image();
+    // 호스트의 아트 주소는 페이지와 출처가 달라서, 이렇게 받아야 WebGL 텍스처와 색 추출에 쓸 수 있다
+    img.crossOrigin = 'anonymous';
+    img.onerror = () => console.warn('album art failed to load', msg.src?.slice(0, 80));
     img.onload = () => {
       if (token !== artToken) return;
       // 같은 곡에 이미 아트를 보여 줬다면(썸네일 → 고해상도 교체) 전환 효과 없이 교체
@@ -112,7 +115,7 @@ function updateUI(dt, { lyricsMode, noLyrics }) {
   const dur = player.tl.dur;
   setStyle(els.fill, 'transform', `scaleX(${dur ? Math.min(1, pos / dur).toFixed(4) : 0})`);
 
-  if (lyricsMode || anim.lyricsMix > 0.01) lyricsView.update(pos);
+  if (lyricsMode || anim.lyricsMix > 0.01) lyricsView.update(pos + player.settings.lyricsOffset);
   if (noLyrics) wave.draw(dt, audio, player.playing, anim.accent);
 
   setStyle(document.documentElement, '--accent', anim.accent.map((v) => Math.round(v * 255)).join(', '));
@@ -138,6 +141,23 @@ function glFps(mode) {
 }
 function uiFps(mode, gl) {
   return mode.noLyrics && player.playing ? player.settings.fps : gl;
+}
+
+// 호스트에 요청할 오디오 분석 주기(Hz). 쓰는 만큼만 받는다 (호스트는 0이면 분석·캡처를 쉼)
+//  - 파형이 보일 때(가사 없는 곡): 30 — 선이 소리를 따라 움직여야 함
+//  - 그 밖의 재생 중: 10 — 배경이 중음에 맞춰 아주 살짝 숨 쉬는 데만 쓰임
+//  - 일시정지·정지·배경 전용 모니터: 0
+const AUDIO_WAVE_HZ = 30, AUDIO_AMBIENT_HZ = 10;
+function audioRate(mode) {
+  if (BG_ONLY || !player.playing) return 0;
+  return mode.noLyrics ? AUDIO_WAVE_HZ : AUDIO_AMBIENT_HZ;
+}
+let host = null;
+let sentAudioRate = -1;
+function requestAudio(rate) {
+  if (rate === sentAudioRate) return;
+  sentAudioRate = rate;
+  host?.send({ type: 'audio', rate });
 }
 
 // ───────────── 메인 루프 ─────────────
@@ -171,6 +191,7 @@ function frame(now) {
 
   const mode = updateLayout(dt);
   if (!BG_ONLY) updateUI(dt, mode);
+  requestAudio(audioRate(mode));
 
   // WebGL은 자기 FPS에 맞을 때만 다시 그림 (안 그리면 이전 화면이 그대로 합성됨)
   const gl = glFps(mode);
@@ -200,14 +221,19 @@ document.fonts?.ready.then(() => lyricsView.layout());
 // ───────────── 연결 ─────────────
 
 const handle = (msg) => player.handle(msg);
-if (!connectHost(handle)) {
+host = connectHost(handle);
+if (!host) {
   // 브라우저 개발 모드
   const { startMock } = await import('./mock.js');
   startMock(handle);
-  els.hint.textContent = 'MOCK  ·  L 가사  ·  K 가사 없는 곡  ·  SPACE 재생/정지  ·  N 다음 곡  ·  I idle  ·  → 10초  ·  이미지/음악 파일 드롭';
+  els.hint.textContent = 'MOCK  ·  L 가사  ·  K 가사 없는 곡  ·  [ ] 가사 싱크  ·  SPACE 재생/정지  ·  N 다음 곡  ·  I idle  ·  → 10초  ·  이미지/음악 파일 드롭';
   window.addEventListener('keydown', (e) => {
     if (e.key === 'l' || e.key === 'L') handle({ type: 'settings', lyrics: !player.settings.lyrics });
     if (e.key === 'k' || e.key === 'K') handle({ type: 'lyrics', key: player.key, status: 'none' });
+    if (e.key === '[' || e.key === ']') {
+      handle({ type: 'settings', lyricsOffset: player.settings.lyricsOffset + (e.key === ']' ? 100 : -100) });
+      els.hint.textContent = `가사 싱크 ${player.settings.lyricsOffset} ms`;
+    }
   });
 }
 window.__wp = { player, anim, audio, lyricsView, renderer }; // 디버깅용

@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/host/">
+    <Project Path="host/SpotifyWallpaper.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SpotifyWallpaper.Tests/SpotifyWallpaper.Tests.csproj" />
+  </Folder>
+</Solution>

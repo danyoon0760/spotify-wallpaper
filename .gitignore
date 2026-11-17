@@ -20,3 +20,6 @@ Desktop.ini
 # 디버깅 스크린샷 등 임시 파일
 *.log
 out.png
+
+# 런타임 포함 배포본
+dist-standalone/

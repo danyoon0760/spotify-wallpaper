@@ -33,9 +33,12 @@ public sealed class MediaWatcher : IDisposable
     public event Action<TrackInfo?>? TrackChanged;
     public event Action<string>? PlaybackChanged;
     public event Action<double, double>? TimelineChanged; // position ms, duration ms
+    public event Action<bool>? SessionPresentChanged;     // Spotify가 미디어 컨트롤에 나타났는지/사라졌는지
 
     public TrackInfo? Current => _current;
     public string Playback => _playback;
+    // Spotify가 켜져 있어 미디어 컨트롤에 세션이 있는지
+    public bool SessionPresent => _session != null;
     // 곡이 바뀌기 직전 곡의 길이 (새 곡 길이가 갱신됐는지 확인용)
     public double PreviousDuration { get; private set; }
 
@@ -46,10 +49,23 @@ public sealed class MediaWatcher : IDisposable
         _mgr.CurrentSessionChanged += (_, _) => PickSession();
         PickSession();
         // 화면 쪽은 받은 위치에서 스스로 시간을 흘려 보내므로 1초 간격 보정이면 충분
-        _tick = new System.Threading.Timer(_ => { SyncTimeline(); EmitTimeline(); }, null, 1000, 1000);
+        _tick = new System.Threading.Timer(_ => Tick(), null, 1000, 1000);
     }
 
+    void Tick()
+    {
+        try { SyncTimeline(); EmitTimeline(); }
+        catch (Exception ex) { Log.Write("media tick: " + ex.Message); }
+    }
+
+    // 시스템 콜백(WinRT 이벤트)에서 불리므로 예외가 밖으로 나가면 앱이 죽는다 — 여기서 잡아 기록만 한다
     void PickSession()
+    {
+        try { PickSessionCore(); }
+        catch (Exception ex) { Log.Write("media session pick: " + ex.Message); }
+    }
+
+    void PickSessionCore()
     {
         if (_mgr == null) return;
         lock (_lock)
@@ -69,6 +85,7 @@ public sealed class MediaWatcher : IDisposable
             _session = pick;
             _sessionId = id;
             lock (_clockLock) _lastRawPos = double.NaN;
+            SessionPresentChanged?.Invoke(_session != null);
 
             if (_session == null)
             {
@@ -87,8 +104,18 @@ public sealed class MediaWatcher : IDisposable
     }
 
     void OnProps(GlobalSystemMediaTransportControlsSession s, MediaPropertiesChangedEventArgs e) => ScheduleRefresh(250);
-    void OnPlayback(GlobalSystemMediaTransportControlsSession s, PlaybackInfoChangedEventArgs e) { EmitPlayback(); SyncTimeline(); EmitTimeline(); }
-    void OnTimeline(GlobalSystemMediaTransportControlsSession s, TimelinePropertiesChangedEventArgs e) { SyncTimeline(); EmitTimeline(); }
+
+    void OnPlayback(GlobalSystemMediaTransportControlsSession s, PlaybackInfoChangedEventArgs e)
+    {
+        try { EmitPlayback(); SyncTimeline(); EmitTimeline(); }
+        catch (Exception ex) { Log.Write("media playback event: " + ex.Message); }
+    }
+
+    void OnTimeline(GlobalSystemMediaTransportControlsSession s, TimelinePropertiesChangedEventArgs e)
+    {
+        try { SyncTimeline(); EmitTimeline(); }
+        catch (Exception ex) { Log.Write("media timeline event: " + ex.Message); }
+    }
 
     // Spotify는 곡이 바뀔 때 속성 이벤트를 여러 번 보내므로 잠깐 모았다가 읽는다
     void ScheduleRefresh(int delayMs)

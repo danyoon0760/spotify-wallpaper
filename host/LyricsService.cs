@@ -1,7 +1,5 @@
-﻿using System.Globalization;
-using System.Net;
+﻿using System.Net;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace SpotifyWallpaper;
 
@@ -11,55 +9,53 @@ public sealed record LyricsResult(string Status, IReadOnlyList<LyricLine> Lines)
 // 서버 오류 등으로 "가사가 있는지 없는지" 판단하지 못했을 때. (가사 없음과 구분)
 public sealed class LyricsUnavailableException(string message) : Exception(message);
 
-// 싱크 가사 검색: LRCLIB + NetEase 를 동시에 조회
-//  - 곡 길이가 ±3초 안에 맞는 "싱크 가사"만 사용 (Sped up / Slowed 버전은 길이 비율로 보정)
-//  - 맞는 게 없으면 "가사 없음" (어긋난 가사를 억지로 띄우지 않음)
-//  - 503 같은 일시 오류는 실패한 요청만 짧게 재시도, 판단 불가면 LyricsUnavailableException
+// 싱크 가사 검색: LRCLIB + NetEase (어떤 후보를 고를지는 LyricsMatcher)
+//  - LRCLIB은 한 번에 하나씩, 정확한 조회 → 검색 → 넓은 검색 순서로 필요한 만큼만 요청한다
+//    (예전처럼 3~4개를 한꺼번에 보내면 429 = 요청 과다에 자주 걸림)
+//  - NetEase는 서버가 달라 LRCLIB과 동시에 조회
+//  - 429는 서버가 알려 준 시간만큼 쉬고, 5xx·타임아웃은 한 번만 다시 시도, 그 밖의 4xx는 "결과 없음"으로 처리
+//  - 일시 오류로 판단할 수 없으면 LyricsUnavailableException → 호출한 쪽이 나중에 다시 시도
 //  - 결과는 디스크에 저장 ("가사 없음"은 하루 뒤 다시 확인)
 public sealed class LyricsService
 {
     const int CacheVersion = 3;
-    const double DurationTolerance = 3.0;
+    const int RequestTimeoutMs = 6000;
+    const int RetryDelayMs = 700;
     static readonly TimeSpan NegativeTtl = TimeSpan.FromDays(1); // 검색 결과가 가끔 흔들려서 "없음"은 짧게만 기억
-    static readonly int[] RequestRetryDelays = { 500, 1000, 2000 };
-    static readonly Regex TimeTag = new(@"\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]", RegexOptions.Compiled);
-    static readonly Regex SpeedVariant = new(@"sped\s*up|speed\s*up|slowed|nightcore|reverb|daycore|배속", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    // NetEase 가사 앞에 붙는 작사/작곡 등 크레딧 줄
-    static readonly Regex CreditLine = new(
-        @"^\s*(作词|作詞|作曲|编曲|編曲|词|詞|曲|制作人|製作人|监制|出品|发行|混音|录音|和声|母带|吉他|贝斯|鼓|键盘|弦乐|演唱|原唱|翻唱|翻译|OP|SP|ISRC|Lyrics|Lyricist|Composer|Arranger|Producer|Written by|Composed by)\s*[:：]",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly LyricsResult None = new("none", Array.Empty<LyricLine>());
 
     readonly Dictionary<string, LyricsResult> _memory = new();
-    readonly string _cacheDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpotifyWallpaper", "lyrics-cache");
+    readonly string _cacheDir = AppPaths.LyricsCache;
 
-    // Rank: 검색 결과 순위 (NetEase는 제목 표기가 달라도 상위 결과 + 길이 일치면 인정)
-    sealed record Candidate(string Source, string TrackName, string ArtistName, double Duration, string Synced, bool Instrumental, int Rank);
+    // LRCLIB 요청은 한 번에 하나. 429를 받으면 _lrclibResumeAt(TickCount64)까지 쉰다
+    readonly SemaphoreSlim _lrclibGate = new(1, 1);
+    long _lrclibResumeAt;
+
+    // 다시 시도할 때 NetEase까지 또 부르지 않도록, 마지막 곡의 NetEase 결과는 기억해 둔다
+    (string Key, List<LyricCandidate> Candidates)? _neteaseMemo;
 
     // 판단할 수 없으면 LyricsUnavailableException
     public async Task<LyricsResult> GetAsync(TrackInfo track, double durationMs, CancellationToken ct)
     {
         if (TryCache(track.Key, out var cached)) return cached;
         var result = await FetchAsync(track, durationMs, ct);
-        Store(track.Key, result);
+        // 곡 길이를 모르는 채로 내린 "없음"은 믿을 수 없으므로 기억하지 않음
+        if (result.Status == "found" || durationMs > 0) Store(track.Key, result);
         return result;
     }
 
     async Task<LyricsResult> FetchAsync(TrackInfo track, double durationMs, CancellationToken ct)
     {
-        string artist = Http.FirstArtist(track.Artist);
-        string title = track.Title.Trim();
-        string clean = CleanTitle(title);
-        double dur = durationMs / 1000;
-        bool speedVariant = SpeedVariant.IsMatch(title) || SpeedVariant.IsMatch(track.Album);
+        var q = LyricQuery.From(track, durationMs);
+        var candidates = new List<LyricCandidate>();
         int failures = 0;
 
         // 실패한 요청은 null로 돌려주고 개수만 센다 (나머지 요청 결과는 살림)
-        async Task<List<Candidate>?> Try(string name, Func<Task<List<Candidate>>> f)
+        async Task<List<LyricCandidate>?> Try(string name, Func<Task<List<LyricCandidate>>> f)
         {
             try { return await f(); }
-            catch (LyricsUnavailableException ex)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
             {
                 Interlocked.Increment(ref failures);
                 Log.Write($"lyrics {name} failed: {ex.Message}");
@@ -67,113 +63,97 @@ public sealed class LyricsService
             }
         }
 
-        var tasks = new List<Task<List<Candidate>?>>
+        async Task<bool> Add(Task<List<LyricCandidate>?> source)
         {
-            Try("netease", () => NetEaseAsync($"{clean} {artist}", ct)),
-            Try("lrclib-search", () => LrclibSearchAsync($"track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}", ct)),
-        };
-        if (dur > 0 && !string.IsNullOrWhiteSpace(track.Album))
-            tasks.Add(Try("lrclib-get", () => LrclibGetAsync(title, artist, track.Album, dur, ct)));
-        if (!clean.Equals(title, StringComparison.OrdinalIgnoreCase))
-            tasks.Add(Try("lrclib-clean", () => LrclibSearchAsync($"track_name={Uri.EscapeDataString(clean)}&artist_name={Uri.EscapeDataString(artist)}", ct)));
-        await Task.WhenAll(tasks);
+            var list = await source;
+            if (list != null) candidates.AddRange(list);
+            return list != null;
+        }
 
-        var candidates = tasks.SelectMany(t => t.Result ?? new List<Candidate>()).ToList();
-        var pick = Pick(candidates, title, clean, artist, dur, speedVariant);
+        static string Enc(string s) => Uri.EscapeDataString(s);
 
-        // 못 찾았으면 LRCLIB 넓은 검색 한 번 더
+        // NetEase는 처음부터 같이 돌려 두고, LRCLIB은 차례대로
+        var netease = Try("netease", () => NetEaseCachedAsync(track.Key, $"{q.Clean} {q.Artist}", ct));
+
+        (LyricCandidate best, double scale)? pick = null;
+        if (q.Duration > 0 && !string.IsNullOrWhiteSpace(q.Album))
+        {
+            await Add(Try("lrclib-get", () => LrclibGetAsync(q, ct)));
+            pick = LyricsMatcher.Pick(candidates, q, exactOnly: true);
+        }
+        if (pick == null)
+        {
+            await Add(Try("lrclib-search", () => LrclibSearchAsync($"track_name={Enc(q.Title)}&artist_name={Enc(q.Artist)}", ct)));
+            pick = LyricsMatcher.Pick(candidates, q, exactOnly: true);
+        }
+        if (pick == null && !q.Clean.Equals(q.Title, StringComparison.OrdinalIgnoreCase))
+        {
+            await Add(Try("lrclib-clean", () => LrclibSearchAsync($"track_name={Enc(q.Clean)}&artist_name={Enc(q.Artist)}", ct)));
+            pick = LyricsMatcher.Pick(candidates, q, exactOnly: true);
+        }
+
+        // 길이가 딱 맞는 LRCLIB 가사를 못 찾았으면 NetEase까지 합쳐서 전체 규칙(배속 보정 포함)으로 다시 고른다
+        if (pick == null)
+        {
+            await Add(netease);
+            pick = LyricsMatcher.Pick(candidates, q);
+        }
         if (pick == null && failures == 0)
         {
-            var wide = await Try("lrclib-wide", () => LrclibSearchAsync($"q={Uri.EscapeDataString(clean + " " + artist)}", ct));
-            if (wide != null) candidates.AddRange(wide);
-            pick = Pick(candidates, title, clean, artist, dur, speedVariant);
+            await Add(Try("lrclib-wide", () => LrclibSearchAsync($"q={Enc(q.Clean + " " + q.Artist)}", ct)));
+            pick = LyricsMatcher.Pick(candidates, q);
         }
 
         if (pick == null)
         {
             if (failures > 0) throw new LyricsUnavailableException($"{failures} request(s) failed, no match");
-            Log.Write($"lyrics '{title}': no synced lyrics within ±{DurationTolerance}s ({candidates.Count} candidates)");
-            return None; // 모든 요청이 성공했는데 맞는 싱크 가사 없음 → 가사 없음
+            // 모든 요청이 성공했는데 맞는 싱크 가사 없음 → 가사 없음. 가까웠던 후보를 남겨 기준 조정의 근거로 쓴다
+            Log.Write($"lyrics '{q.Title}' ({q.Duration:F0}s): no synced lyrics within ±{LyricsMatcher.DurationTolerance}s ({candidates.Count} candidates)");
+            foreach (var c in LyricsMatcher.Nearest(candidates, q, 3))
+                Log.Write("    near miss " + LyricsMatcher.Describe(c, q));
+            return None;
         }
 
         var (best, scale) = pick.Value;
-        Log.Write($"lyrics '{title}' → [{best.Source}] '{best.TrackName}' ({best.ArtistName}) dur {dur:F1}s vs {best.Duration:F1}s scale {scale:F3}");
+        Log.Write($"lyrics '{q.Title}' → [{best.Source}] '{best.TrackName}' ({best.ArtistName}) dur {q.Duration:F1}s vs {best.Duration:F1}s scale {scale:F3}");
         if (best.Instrumental) return new("instrumental", Array.Empty<LyricLine>());
-        var lines = ParseLrc(best.Synced, scale);
+        var lines = LyricsMatcher.ParseLrc(best.Synced, scale);
         return lines.Count(l => l.Text.Length > 0) >= 2 ? new("found", lines) : None;
-    }
-
-    static (Candidate best, double scale)? Pick(
-        List<Candidate> candidates, string title, string clean, string artist, double dur, bool speedVariant)
-    {
-        bool TitleOk(Candidate c) => Http.Similar(c.TrackName, clean) || Http.Similar(c.TrackName, title);
-        bool ArtistOk(Candidate c) => Http.Similar(c.ArtistName, artist);
-        double Diff(Candidate c) => dur > 0 && c.Duration > 0 ? Math.Abs(c.Duration - dur) : double.MaxValue;
-
-        var usable = candidates.Where(c => c.Synced.Length > 0 || c.Instrumental).ToList();
-
-        // 1) 길이가 맞는 것: 제목·아티스트 중 하나 이상 일치, 또는 NetEase 상위 결과(표기만 다른 경우)
-        var exact = usable
-            .Where(c => Diff(c) <= DurationTolerance)
-            .Where(c => (TitleOk(c) && (ArtistOk(c) || Diff(c) <= 2)) ||
-                        (ArtistOk(c) && Diff(c) <= 1.5) ||
-                        (c.Source == "netease" && c.Rank < 3 && Diff(c) <= 1.5))
-            .OrderBy(Diff)
-            .ThenBy(c => c.Source == "lrclib" ? 0 : 1)
-            .FirstOrDefault();
-        if (exact != null) return (exact, 1.0);
-
-        // 2) 배속 버전: 원곡 가사를 길이 비율로 보정 (제목·아티스트 모두 일치해야 함)
-        if (speedVariant && dur > 0)
-        {
-            var original = usable
-                .Where(c => c.Synced.Length > 0 && c.Duration > 0 && TitleOk(c) && ArtistOk(c))
-                .Where(c => dur / c.Duration is > 0.55 and < 1.6)
-                .OrderBy(c => c.Source == "lrclib" ? 0 : 1)
-                .FirstOrDefault();
-            if (original != null) return (original, dur / original.Duration);
-        }
-
-        // 3) 곡 길이를 모를 때만: 제목+아티스트 일치하는 첫 싱크 가사
-        if (dur <= 0)
-        {
-            var any = usable.FirstOrDefault(c => TitleOk(c) && ArtistOk(c));
-            if (any != null) return (any, 1.0);
-        }
-        return null;
     }
 
     // ───────────── LRCLIB ─────────────
 
-    static async Task<List<Candidate>> LrclibGetAsync(string title, string artist, string album, double dur, CancellationToken ct)
+    async Task<List<LyricCandidate>> LrclibGetAsync(LyricQuery q, CancellationToken ct)
     {
         var json = await GetStringAsync("https://lrclib.net/api/get?" +
-                                        $"track_name={Uri.EscapeDataString(title)}" +
-                                        $"&artist_name={Uri.EscapeDataString(artist)}" +
-                                        $"&album_name={Uri.EscapeDataString(album)}" +
-                                        $"&duration={Math.Round(dur)}", null, ct);
-        return json == null ? new() : new() { LrclibCandidate(JsonDocument.Parse(json).RootElement, 0) };
+                                        $"track_name={Uri.EscapeDataString(q.Title)}" +
+                                        $"&artist_name={Uri.EscapeDataString(q.Artist)}" +
+                                        $"&album_name={Uri.EscapeDataString(q.Album)}" +
+                                        $"&duration={Math.Round(q.Duration)}", lrclib: true, ct);
+        if (json == null) return new();
+        using var doc = JsonDocument.Parse(json);
+        return new() { LrclibCandidate(doc.RootElement, 0) };
     }
 
-    static async Task<List<Candidate>> LrclibSearchAsync(string query, CancellationToken ct)
+    async Task<List<LyricCandidate>> LrclibSearchAsync(string query, CancellationToken ct)
     {
-        var json = await GetStringAsync("https://lrclib.net/api/search?" + query, null, ct);
-        var list = new List<Candidate>();
+        var json = await GetStringAsync("https://lrclib.net/api/search?" + query, lrclib: true, ct);
+        var list = new List<LyricCandidate>();
         if (json == null) return list;
-        var arr = JsonDocument.Parse(json).RootElement;
-        if (arr.ValueKind != JsonValueKind.Array) return list;
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array) return list;
         int rank = 0;
-        foreach (var e in arr.EnumerateArray()) list.Add(LrclibCandidate(e, rank++));
+        foreach (var e in doc.RootElement.EnumerateArray()) list.Add(LrclibCandidate(e, rank++));
         return list;
     }
 
-    static Candidate LrclibCandidate(JsonElement e, int rank) => new(
+    static LyricCandidate LrclibCandidate(JsonElement e, int rank) => new(
         "lrclib",
         Str(e, "trackName"),
         Str(e, "artistName"),
-        e.TryGetProperty("duration", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetDouble() : 0,
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty("duration", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetDouble() : 0,
         Str(e, "syncedLyrics"),
-        e.TryGetProperty("instrumental", out var i) && i.ValueKind == JsonValueKind.True,
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty("instrumental", out var i) && i.ValueKind == JsonValueKind.True,
         rank);
 
     // ───────────── NetEase ─────────────
@@ -184,36 +164,49 @@ public sealed class LyricsService
         ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
     };
 
-    static async Task<List<Candidate>> NetEaseAsync(string query, CancellationToken ct)
+    async Task<List<LyricCandidate>> NetEaseCachedAsync(string trackKey, string query, CancellationToken ct)
+    {
+        if (_neteaseMemo is { } memo && memo.Key == trackKey) return memo.Candidates;
+        var list = await NetEaseAsync(query, ct);
+        _neteaseMemo = (trackKey, list);
+        return list;
+    }
+
+    async Task<List<LyricCandidate>> NetEaseAsync(string query, CancellationToken ct)
     {
         var json = await GetStringAsync(
-            $"https://music.163.com/api/search/get?s={Uri.EscapeDataString(query)}&type=1&limit=6", NetEaseHeaders, ct);
-        var list = new List<Candidate>();
+            $"https://music.163.com/api/search/get?s={Uri.EscapeDataString(query)}&type=1&limit=6", lrclib: false, ct);
+        var list = new List<LyricCandidate>();
         if (json == null) return list;
-        var root = JsonDocument.Parse(json).RootElement;
-        if (!root.TryGetProperty("result", out var result) || !result.TryGetProperty("songs", out var songs)) return list;
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("result", out var result) ||
+            result.ValueKind != JsonValueKind.Object ||
+            !result.TryGetProperty("songs", out var songs) ||
+            songs.ValueKind != JsonValueKind.Array) return list;
 
         // 상위 3곡만 가사 조회 (동시에)
         var top = songs.EnumerateArray().Take(3).Select((s, rank) => (s: s.Clone(), rank)).ToList();
         var lyricTasks = top.Select(async x =>
         {
             long id = x.s.GetProperty("id").GetInt64();
-            var lj = await GetStringAsync($"https://music.163.com/api/song/lyric?id={id}&lv=1&kv=1&tv=-1", NetEaseHeaders, ct);
+            var lj = await GetStringAsync($"https://music.163.com/api/song/lyric?id={id}&lv=1&kv=1&tv=-1", lrclib: false, ct);
             string lrc = "";
             bool instrumental = false;
             if (lj != null)
             {
-                var lr = JsonDocument.Parse(lj).RootElement;
-                if (lr.TryGetProperty("lrc", out var l) && l.TryGetProperty("lyric", out var t) && t.ValueKind == JsonValueKind.String)
+                using var ldoc = JsonDocument.Parse(lj);
+                var lr = ldoc.RootElement;
+                if (lr.TryGetProperty("lrc", out var l) && l.ValueKind == JsonValueKind.Object &&
+                    l.TryGetProperty("lyric", out var t) && t.ValueKind == JsonValueKind.String)
                     lrc = t.GetString() ?? "";
                 instrumental = (lr.TryGetProperty("pureMusic", out var pm) && pm.ValueKind == JsonValueKind.True) ||
                                lrc.Contains("纯音乐，请欣赏");
             }
-            string artistName = x.s.TryGetProperty("artists", out var ar) && ar.GetArrayLength() > 0
+            string artistName = x.s.TryGetProperty("artists", out var ar) && ar.ValueKind == JsonValueKind.Array && ar.GetArrayLength() > 0
                 ? Str(ar[0], "name") : "";
             double durSec = x.s.TryGetProperty("duration", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetDouble() / 1000 : 0;
-            return new Candidate("netease", Str(x.s, "name"), artistName, durSec,
-                instrumental ? "" : (TimeTag.IsMatch(lrc) ? lrc : ""), instrumental, x.rank);
+            return new LyricCandidate("netease", Str(x.s, "name"), artistName, durSec,
+                instrumental ? "" : (LyricsMatcher.HasTimeTags(lrc) ? lrc : ""), instrumental, x.rank);
         });
         list.AddRange(await Task.WhenAll(lyricTasks));
         return list;
@@ -223,8 +216,7 @@ public sealed class LyricsService
 
     sealed record CacheEntry(int V, DateTime SavedAt, string Status, List<LyricLine> Lines);
 
-    string CachePath(string key) =>
-        Path.Combine(_cacheDir, Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes(key))) + ".json");
+    string CachePath(string key) => Path.Combine(_cacheDir, ArtStore.Id(key).ToUpperInvariant() + ".json");
 
     bool TryCache(string key, out LyricsResult result)
     {
@@ -241,7 +233,7 @@ public sealed class LyricsService
                 if (!expired)
                 {
                     result = new LyricsResult(e!.Status, e.Lines);
-                    lock (_memory) _memory[key] = result;
+                    Remember(key, result);
                     return true;
                 }
             }
@@ -253,7 +245,7 @@ public sealed class LyricsService
 
     void Store(string key, LyricsResult r)
     {
-        lock (_memory) _memory[key] = r;
+        Remember(key, r);
         try
         {
             Directory.CreateDirectory(_cacheDir);
@@ -263,73 +255,78 @@ public sealed class LyricsService
         catch (Exception ex) { Log.Write("lyrics cache write: " + ex.Message); }
     }
 
+    // 메모리에는 최근 곡만 (나머지는 디스크에서 다시 읽으면 됨)
+    void Remember(string key, LyricsResult r)
+    {
+        lock (_memory)
+        {
+            if (_memory.Count >= 50) _memory.Clear();
+            _memory[key] = r;
+        }
+    }
+
     // ───────────── 요청 ─────────────
 
-    // 404 → null. 5xx·429·타임아웃·네트워크 오류는 짧게 재시도 후 LyricsUnavailableException.
-    static async Task<string?> GetStringAsync(string url, Dictionary<string, string>? headers, CancellationToken ct)
+    // 본문을 돌려준다. 404나 고쳐 보낼 수 없는 4xx는 null("결과 없음").
+    // 429·5xx·타임아웃·네트워크 오류는 LyricsUnavailableException (5xx·타임아웃·네트워크 오류는 한 번 다시 시도한 뒤).
+    async Task<string?> GetStringAsync(string url, bool lrclib, CancellationToken ct)
     {
         string last = "";
-        for (int attempt = 0; ; attempt++)
+        for (int attempt = 0; attempt < 2; attempt++)
         {
+            if (attempt > 0) await Task.Delay(RetryDelayMs, ct);
+            if (lrclib) await _lrclibGate.WaitAsync(ct);
             try
             {
+                if (lrclib) await WaitForLrclibCooldownAsync(ct);
+
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(6000);
+                cts.CancelAfter(RequestTimeoutMs);
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                if (headers != null)
-                    foreach (var (k, v) in headers)
+                if (!lrclib)
+                    foreach (var (k, v) in NetEaseHeaders)
                     {
                         if (k == "User-Agent") req.Headers.UserAgent.Clear();
                         req.Headers.TryAddWithoutValidation(k, v);
                     }
                 using var res = await Http.Client.SendAsync(req, cts.Token);
-                if (res.StatusCode == HttpStatusCode.NotFound) return null;
+                int code = (int)res.StatusCode;
                 if (res.IsSuccessStatusCode) return await res.Content.ReadAsStringAsync(cts.Token);
-                last = $"HTTP {(int)res.StatusCode}";
-                if ((int)res.StatusCode < 500 && res.StatusCode != HttpStatusCode.TooManyRequests)
-                    throw new LyricsUnavailableException(last); // 재시도해도 소용없는 오류
+                if (res.StatusCode == HttpStatusCode.NotFound) return null;
+                if (res.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    // 바로 다시 보내면 제한만 길어진다. 서버가 알려 준 시간(없으면 10초)만큼 쉰다
+                    double wait = res.Headers.RetryAfter?.Delta?.TotalSeconds ?? 10;
+                    wait = Math.Clamp(wait, 5, 60);
+                    if (lrclib) Interlocked.Exchange(ref _lrclibResumeAt, Environment.TickCount64 + (long)(wait * 1000));
+                    throw new LyricsUnavailableException($"HTTP 429, backing off {wait:F0}s");
+                }
+                if (code >= 500 || res.StatusCode == HttpStatusCode.RequestTimeout) last = $"HTTP {code}";
+                else
+                {
+                    // 400 등: 같은 요청을 다시 보내도 결과가 같다 → 이 요청은 결과 없음으로 치고 넘어감
+                    Log.Write($"lyrics request rejected: HTTP {code} {new Uri(url).Host}{new Uri(url).AbsolutePath}");
+                    return null;
+                }
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { last = "timeout"; }
             catch (HttpRequestException ex) { last = ex.Message; }
-            catch (JsonException ex) { last = "bad json: " + ex.Message; }
-
-            if (attempt >= RequestRetryDelays.Length) throw new LyricsUnavailableException(last);
-            await Task.Delay(RequestRetryDelays[attempt], ct);
+            finally
+            {
+                if (lrclib) _lrclibGate.Release();
+            }
         }
+        throw new LyricsUnavailableException(last);
     }
 
-    // ───────────── 변환 ─────────────
-
-    // "(feat. X)", "- Remastered 2011", "(Sped Up)", "[Live]" 등 제거
-    static string CleanTitle(string t)
+    // 쉬는 시간이 조금 남았으면 기다리고, 길게 남았으면 이번 시도는 포기 (호출한 쪽이 나중에 다시 시도)
+    async Task WaitForLrclibCooldownAsync(CancellationToken ct)
     {
-        string s = Regex.Replace(t, @"\s*[\(\[][^\)\]]*[\)\]]", "");
-        s = Regex.Replace(s, @"\s+-\s+.*$", "");
-        s = Regex.Replace(s, @"\s+(feat\.?|ft\.?|with)\s+.*$", "", RegexOptions.IgnoreCase);
-        s = s.Trim();
-        return s.Length > 0 ? s : t;
+        long wait = Interlocked.Read(ref _lrclibResumeAt) - Environment.TickCount64;
+        if (wait > 3000) throw new LyricsUnavailableException($"lrclib rate-limited, {wait / 1000}s left");
+        if (wait > 0) await Task.Delay((int)wait, ct);
     }
 
     static string Str(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-
-    static List<LyricLine> ParseLrc(string lrc, double scale)
-    {
-        var lines = new List<LyricLine>();
-        foreach (var raw in lrc.Split('\n'))
-        {
-            var matches = TimeTag.Matches(raw);
-            if (matches.Count == 0) continue;
-            string text = raw[(matches[^1].Index + matches[^1].Length)..].Trim();
-            if (CreditLine.IsMatch(text)) continue;
-            foreach (Match m in matches)
-            {
-                double min = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
-                double sec = double.Parse(m.Groups[2].Value.Replace(':', '.'), CultureInfo.InvariantCulture);
-                lines.Add(new LyricLine(Math.Round((min * 60 + sec) * 1000 * scale), text));
-            }
-        }
-        lines.Sort((a, b) => a.T.CompareTo(b.T));
-        return lines;
-    }
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
 }

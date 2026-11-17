@@ -29,7 +29,7 @@ internal sealed class ProcessLoopbackCapture : IDisposable
 
     public static async Task<ProcessLoopbackCapture> StartAsync(int processId)
     {
-        var client = await ActivateAsync(processId);
+        var client = await ActivateAsync(processId).ConfigureAwait(false);
         var format = WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels);
         client.Initialize(AudioClientShareMode.Shared,
             AudioClientStreamFlags.Loopback | AudioClientStreamFlags.EventCallback,
@@ -68,8 +68,11 @@ internal sealed class ProcessLoopbackCapture : IDisposable
         Stopped?.Invoke(_stop ? null : error);
     }
 
+    int _disposed;
+
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
         _stop = true;
         _event.Set();
         if (Thread.CurrentThread != _thread) _thread.Join(500);
@@ -100,7 +103,8 @@ internal sealed class ProcessLoopbackCapture : IDisposable
 
             var handler = new CompletionHandler();
             ActivateAudioInterfaceAsync(VirtualProcessLoopback, IID_IAudioClient, propPtr, handler, out _);
-            var audioClient = (IAudioClient)await handler.Task;
+            // 이어지는 작업이 호출한 스레드(UI일 수 있음)로 돌아가지 않게 한다 — 오디오 COM 객체는 만든 쪽(MTA)에서만 쓸 수 있음
+            var audioClient = (IAudioClient)await handler.Task.ConfigureAwait(false);
             return new AudioClient(audioClient);
         }
         finally
