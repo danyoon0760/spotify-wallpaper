@@ -139,6 +139,8 @@ Other scripts: `node dev/fetch-fonts.mjs` re-downloads the bundled fonts (only n
 
 MIT — see [LICENSE](LICENSE). The bundled fonts are under the SIL Open Font License (`web/fonts/licenses`).
 
+This project is not affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB.
+
 ## Notes
 
 - It follows Spotify only. Other apps' media (YouTube in a browser, etc.) and their sound are ignored.
